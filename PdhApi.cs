@@ -143,6 +143,7 @@ public sealed class PdhQuery : IDisposable
             if (status is PdhNativeMethods.InvalidData
                 or PdhNativeMethods.NoInstance
                 or PdhNativeMethods.NoData
+                or PdhNativeMethods.EntryNotInLogFile
                 or PdhNativeMethods.CalculationNegativeValue)
             {
                 return false;
@@ -280,6 +281,7 @@ internal static class PdhNativeMethods
     internal const uint NoData = 0x800007D5;
     internal const uint NoInstance = 0x800007D1;
     internal const uint InvalidData = 0xC0000BC6;
+    internal const uint EntryNotInLogFile = 0xC0000BCD;
     internal const uint CalculationNegativeValue = 0x800007D8;
     internal const uint FormatDouble = 0x00000200;
     internal const uint CounterStatusValidData = 0;

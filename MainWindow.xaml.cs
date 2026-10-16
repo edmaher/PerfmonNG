@@ -124,9 +124,18 @@ public partial class MainWindow : Window
         var skippedText = data.InvalidValueCount == 0
             ? string.Empty
             : $"; skipped {data.InvalidValueCount:N0} invalid/off-axis values";
+        var unavailablePaths = data.UnavailableCounters
+            .Select(PdhLogFile.BuildCounterPath)
+            .ToArray();
+        var unavailableText = unavailablePaths.Length == 0
+            ? string.Empty
+            : $"; skipped {unavailablePaths.Length:N0} counter paths not present in the log";
+        StatusText.ToolTip = unavailablePaths.Length == 0
+            ? null
+            : "Counter paths not present in this log:" + Environment.NewLine + string.Join(Environment.NewLine, unavailablePaths);
         StatusText.Text = $"{data.Series.Count:N0} counters plotted; {data.SamplesRead:N0} samples; " +
             $"{data.TimeRange.FirstTimePoint:G} to {data.TimeRange.LastTimePoint:G} UTC; " +
-            $"{statistic.Label}, {aggregation.Label} per point{skippedText}";
+            $"{statistic.Label}, {aggregation.Label} per point{skippedText}{unavailableText}";
     }
 
     private void CounterExpand_Click(object sender, RoutedEventArgs e)

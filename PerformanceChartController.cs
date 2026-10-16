@@ -48,6 +48,7 @@ public sealed record PerformanceChartData(
     PerformanceAggregationStatistic Statistic,
     int TotalBucketCount,
     IReadOnlyList<PdhCounterIdentifier> Counters,
+    IReadOnlyList<PdhCounterIdentifier> UnavailableCounters,
     IReadOnlyList<PerformancePlotSeries> Series,
     double YAxisMinimum,
     double YAxisMaximum,
@@ -182,11 +183,26 @@ public sealed class PerformanceChartController
                 statistic,
                 bucketCount,
                 yAxisMinimum,
-                yAxisMaximum);
+                yAxisMaximum,
+                [],
+                []);
         }
 
         using var query = PdhQuery.OpenLogFile(logFilePath);
-        var counters = AddCounters(query, counterIdentifiers);
+            var counters = AddCounters(query, counterIdentifiers, out var unavailableCounters);
+            if (counters.Length == 0)
+            {
+                return CreateEmptyChartData(
+                logFilePath,
+                timeRange,
+                aggregationInterval,
+                statistic,
+                bucketCount,
+                yAxisMinimum,
+                yAxisMaximum,
+                counterIdentifiers,
+                unavailableCounters);
+            }
 
         var accumulators = counters
             .Select(_ => new SeriesAccumulator(bucketCount, statistic))
@@ -214,6 +230,7 @@ public sealed class PerformanceChartController
             statistic,
             bucketCount,
             counterIdentifiers,
+            unavailableCounters,
             series,
             yAxisMinimum,
             yAxisMaximum,
@@ -228,7 +245,9 @@ public sealed class PerformanceChartController
         PerformanceAggregationStatistic statistic,
         int bucketCount,
         double yAxisMinimum,
-        double yAxisMaximum)
+        double yAxisMaximum,
+        IReadOnlyList<PdhCounterIdentifier> counters,
+        IReadOnlyList<PdhCounterIdentifier> unavailableCounters)
     {
         return new PerformanceChartData(
             filePath,
@@ -236,7 +255,8 @@ public sealed class PerformanceChartController
             aggregationInterval,
             statistic,
             bucketCount,
-            [],
+            counters,
+            unavailableCounters,
             [],
             yAxisMinimum,
             yAxisMaximum,
@@ -253,15 +273,26 @@ public sealed class PerformanceChartController
 
     private static CounterBinding[] AddCounters(
         PdhQuery query,
-        IReadOnlyList<PdhCounterIdentifier> identifiers)
+        IReadOnlyList<PdhCounterIdentifier> identifiers,
+        out IReadOnlyList<PdhCounterIdentifier> unavailableCounters)
     {
-        return identifiers
-            .Select(identifier =>
+        var available = new List<CounterBinding>(identifiers.Count);
+        var unavailable = new List<PdhCounterIdentifier>();
+        foreach (var identifier in identifiers)
+        {
+            var path = PdhLogFile.BuildCounterPath(identifier);
+            try
             {
-                var path = PdhLogFile.BuildCounterPath(identifier);
-                return new CounterBinding(identifier, path, query.AddCounter(path));
-            })
-            .ToArray();
+                available.Add(new CounterBinding(identifier, path, query.AddCounter(path)));
+            }
+            catch (PdhException exception) when (exception.Status == PdhNativeMethods.EntryNotInLogFile)
+            {
+                unavailable.Add(identifier);
+            }
+        }
+
+        unavailableCounters = unavailable;
+        return available.ToArray();
     }
 
     private static SampleReadResult ReadSamples(

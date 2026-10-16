@@ -24,6 +24,13 @@ public static class PdhLogFile
 {
     private const uint ErrorSuccess = 0;
     private const uint MoreData = 0x800007D2;
+    private const uint NoMachine = 0x800007D0;
+    private const uint NoInstance = 0x800007D1;
+    private const uint NoObject = 0xC0000BB8;
+    private const uint NoCounter = 0xC0000BB9;
+    private const uint InvalidPath = 0xC0000BC4;
+    private const uint InvalidInstance = 0xC0000BC5;
+    private const uint EntryNotInLogFile = 0xC0000BCD;
     private const uint DetailWizard = 400;
 
     public static DateTime GetFirstTimePoint(string logFilePath)
@@ -141,9 +148,9 @@ public static class PdhLogFile
             foreach (var objectName in EnumerateObjects(logFilePath, computer))
             {
                 var objectItems = ReadObjectItems(logFilePath, computer, objectName);
-                foreach (var counterName in objectItems.Counters)
+                if (!objectItems.HasInstances)
                 {
-                    if (!objectItems.HasInstances)
+                    foreach (var counterName in objectItems.Counters)
                     {
                         results.Add(new PdhCounterIdentifier(
                             Instance: null,
@@ -151,25 +158,101 @@ public static class PdhLogFile
                             Parent: null,
                             Object: objectName,
                             Computer: computer));
-                        continue;
                     }
 
-                    foreach (var instanceName in objectItems.Instances)
+                    continue;
+                }
+
+                var parentNames = objectItems.Instances
+                    .Select(instanceName => ParseInstance(instanceName).Parent)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                var expandedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var counterName in objectItems.Counters)
+                {
+                    foreach (var parentName in parentNames)
                     {
-                        var (parent, instance, instanceIndex) = ParseInstance(instanceName);
-                        results.Add(new PdhCounterIdentifier(
-                            Instance: instance,
+                        var wildcardIdentifier = new PdhCounterIdentifier(
+                            Instance: "*",
                             Counter: counterName,
-                            Parent: parent,
+                            Parent: parentName,
                             Object: objectName,
-                            Computer: computer,
-                            InstanceIndex: instanceIndex));
+                            Computer: computer);
+                        var wildcardPath = BuildCounterPath(wildcardIdentifier);
+
+                        foreach (var fullPath in ExpandCounterPath(logFilePath, wildcardPath))
+                        {
+                            if (expandedPaths.Add(fullPath))
+                            {
+                                results.Add(ParseCounterPath(fullPath));
+                            }
+                        }
                     }
                 }
             }
         }
 
         return results;
+    }
+
+    private static string[] ExpandCounterPath(string logFilePath, string wildcardPath)
+    {
+        try
+        {
+            return ReadMultiString(
+                (IntPtr buffer, ref uint length, bool _) =>
+                    NativeMethods.PdhExpandWildCardPathW(
+                        logFilePath,
+                        wildcardPath,
+                        buffer,
+                        ref length,
+                        0),
+                nameof(NativeMethods.PdhExpandWildCardPathW));
+        }
+        catch (PdhException exception) when (exception.Status is
+            NoMachine or NoInstance or NoObject or NoCounter or InvalidPath or InvalidInstance or EntryNotInLogFile)
+        {
+            return [];
+        }
+    }
+
+    private static PdhCounterIdentifier ParseCounterPath(string fullPath)
+    {
+        uint bufferSize = 0;
+        var status = NativeMethods.PdhParseCounterPathW(fullPath, IntPtr.Zero, ref bufferSize, 0);
+        if (status != MoreData && status != ErrorSuccess)
+        {
+            throw new PdhException(nameof(NativeMethods.PdhParseCounterPathW), status);
+        }
+
+        if (bufferSize == 0)
+        {
+            throw new PdhException(nameof(NativeMethods.PdhParseCounterPathW), status);
+        }
+
+        var buffer = Marshal.AllocHGlobal(checked((int)bufferSize));
+        try
+        {
+            status = NativeMethods.PdhParseCounterPathW(fullPath, buffer, ref bufferSize, 0);
+            if (status != ErrorSuccess)
+            {
+                throw new PdhException(nameof(NativeMethods.PdhParseCounterPathW), status);
+            }
+
+            var elements = Marshal.PtrToStructure<CounterPathElements>(buffer);
+            return new PdhCounterIdentifier(
+                Instance: elements.Instance,
+                Counter: elements.Counter,
+                Parent: elements.Parent,
+                Object: elements.Object,
+                Computer: elements.Computer,
+                InstanceIndex: elements.Instance is null ? null : elements.InstanceIndex);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
     }
 
     private static string[] ReadMultiString(MultiStringQuery query, string operation)
@@ -416,6 +499,21 @@ public static class PdhLogFile
             ref CounterPathElements pathElements,
             [Out] StringBuilder? fullPath,
             ref uint characterCount,
+            uint flags);
+
+        [DllImport("pdh.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        internal static extern uint PdhExpandWildCardPathW(
+            string dataSource,
+            string wildcardPath,
+            IntPtr expandedPathList,
+            ref uint characterCount,
+            uint flags);
+
+        [DllImport("pdh.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+        internal static extern uint PdhParseCounterPathW(
+            string fullPath,
+            IntPtr pathElements,
+            ref uint bufferSize,
             uint flags);
     }
 }
